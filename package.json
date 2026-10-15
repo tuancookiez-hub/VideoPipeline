@@ -5,7 +5,7 @@
   "type": "module",
   "bin": { "vp": "bin/vp.mjs" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test 'test/*.test.mjs'",
     "demo": "node bin/vp.mjs render examples/demo/project.json",
     "doctor": "node bin/vp.mjs doctor"
   },
