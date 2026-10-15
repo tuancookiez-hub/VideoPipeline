@@ -1,13 +1,13 @@
-import { test, before, after } from 'node:test';
+import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ffmpeg, probe } from '../src/ffmpeg.mjs';
 import * as video from '../src/engines/video.mjs';
 import * as image from '../src/engines/image.mjs';
 import * as collage from '../src/engines/collage.mjs';
-import { hyperframesArgs } from '../src/engines/hyperframes.mjs';
+import { defaultBrowser, hyperframesArgs, hyperframesEnv, runCli } from '../src/engines/hyperframes.mjs';
 
 const project = { width: 320, height: 180, fps: 10 };
 let dir;
@@ -84,4 +84,76 @@ test('hyperframesArgs pins the CLI version and passes fps and output', () => {
   const args = hyperframesArgs({ src: '/abs/scenes/intro/index.html' }, { workDir: '/abs/work', project: { fps: 24 } });
   assert.deepEqual(args, ['--yes', 'hyperframes@0.8.159', 'render', '/abs/scenes/intro', '-c', 'index.html',
     '-o', '/abs/work/raw.mp4', '-f', '24', '--quiet']);
+});
+
+test('collageArgs ends options before the prompt so a dash-led prompt stays positional', () => {
+  const args = collage.collageArgs({ still: '/abs/a.png', duration: 4, prompt: '-dash start' },
+    { project, workDir: '/abs/work', collageDir: '/abs/collage' });
+  assert.deepEqual(args, ['/abs/collage/scripts/generate_video.py', '--image', '/abs/a.png',
+    '--aspect-ratio', '16:9', '--duration', '4', '--output', '/abs/work/raw.mp4', '--', '-dash start']);
+});
+
+test('collageArgs uses the default prompt and a portrait ratio for tall projects', () => {
+  const args = collage.collageArgs({ still: '/abs/a.png', duration: 20 },
+    { project: { width: 180, height: 320 }, workDir: '/w', collageDir: '/c' });
+  assert.equal(args[args.length - 1], 'paper collage animation');
+  assert.equal(args[args.indexOf('--aspect-ratio') + 1], '9:16');
+  assert.equal(args[args.indexOf('--duration') + 1], '10');
+});
+
+test('missingForGemini names only the unset requirements', () => {
+  const env = { GEMINI_API_KEY: 'secret-value', VP_COLLAGE_DIR: '/c' };
+  assert.deepEqual(collage.missingForGemini({ still: '/a.png' }, env), []);
+  assert.deepEqual(collage.missingForGemini({ prompt: 'x' }, env), ['scene.still']);
+  assert.deepEqual(collage.missingForGemini({ still: '/a.png' }, { VP_COLLAGE_DIR: '/c' }), ['GEMINI_API_KEY']);
+  assert.deepEqual(collage.missingForGemini({}, {}), ['GEMINI_API_KEY', 'VP_COLLAGE_DIR', 'scene.still']);
+});
+
+describe('hyperframes child environment', () => {
+  const base = {
+    PATH: '/usr/bin', HOME: '/home/u', HTTPS_PROXY: 'http://proxy:3128', NODE_EXTRA_CA_CERTS: '/ca.pem',
+    npm_config_registry: 'https://registry.npmjs.org', GEMINI_API_KEY: 'g-secret', GITHUB_TOKEN: 't-secret',
+    AWS_SECRET_ACCESS_KEY: 's-secret', DB_PASSWORD: 'p-secret', HYPERFRAMES_LOG: 'debug',
+  };
+  let browsers;
+
+  before(() => {
+    browsers = join(dir, 'browsers');
+    for (const v of ['1100', '1194']) {
+      mkdirSync(join(browsers, `chromium_headless_shell-${v}`, 'chrome-linux'), { recursive: true });
+      writeFileSync(join(browsers, `chromium_headless_shell-${v}`, 'chrome-linux', 'headless_shell'), '');
+    }
+    mkdirSync(join(browsers, 'chromium_headless_shell-1300', 'chrome-linux'), { recursive: true });
+  });
+
+  test('drops secret-like variables and keeps PATH, HOME, proxy, npm and HYPERFRAMES_*', () => {
+    const env = hyperframesEnv(base, browsers);
+    for (const name of ['GEMINI_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'DB_PASSWORD']) {
+      assert.equal(env[name], undefined, name);
+    }
+    assert.ok(!Object.values(env).includes('g-secret'));
+    for (const name of ['PATH', 'HOME', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'npm_config_registry', 'HYPERFRAMES_LOG']) {
+      assert.equal(env[name], base[name], name);
+    }
+    assert.equal(env.HYPERFRAMES_NO_TELEMETRY, '1');
+  });
+
+  test('defaults the browser to the newest headless shell that exists', () => {
+    assert.equal(defaultBrowser(browsers), join(browsers, 'chromium_headless_shell-1194', 'chrome-linux', 'headless_shell'));
+    assert.equal(hyperframesEnv(base, browsers).HYPERFRAMES_BROWSER_PATH,
+      join(browsers, 'chromium_headless_shell-1194', 'chrome-linux', 'headless_shell'));
+    assert.equal(defaultBrowser(join(dir, 'missing')), null);
+    assert.equal(hyperframesEnv(base, join(dir, 'missing')).HYPERFRAMES_BROWSER_PATH, undefined);
+  });
+
+  test('VP_HYPERFRAMES_BROWSER overrides the default', () => {
+    const env = hyperframesEnv({ ...base, VP_HYPERFRAMES_BROWSER: '/custom/shell' }, browsers);
+    assert.equal(env.HYPERFRAMES_BROWSER_PATH, '/custom/shell');
+  });
+
+  test('runCli kills the child and throws when the timeout passes', async () => {
+    const started = Date.now();
+    await assert.rejects(runCli(['30'], { env: process.env, timeoutS: 0.2, bin: 'sleep' }), /timed out after 0.2s/);
+    assert.ok(Date.now() - started < 5000);
+  });
 });

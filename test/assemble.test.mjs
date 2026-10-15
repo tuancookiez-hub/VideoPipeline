@@ -1,8 +1,10 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { ffmpeg, probe } from '../src/ffmpeg.mjs';
 import { normalizeClip } from '../src/normalize.mjs';
 import { joinClips, mixAudio } from '../src/assemble.mjs';
@@ -10,6 +12,19 @@ import { joinClips, mixAudio } from '../src/assemble.mjs';
 const W = 320;
 const H = 180;
 const FPS = 10;
+const run = promisify(execFile);
+
+// Per-stream durations from ffprobe -show_streams, keyed by codec_type ('video' | 'audio').
+async function streamDurations(file) {
+  const { stdout } = await run('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', file]);
+  return Object.fromEntries(JSON.parse(stdout).streams.map((s) => [s.codec_type, Number(s.duration)]));
+}
+
+async function assertAvInSync(file) {
+  const d = await streamDurations(file);
+  assert.ok(Number.isFinite(d.audio) && Number.isFinite(d.video), `missing stream duration in ${file}`);
+  assert.ok(Math.abs(d.audio - d.video) <= 0.01, `audio ${d.audio} vs video ${d.video}`);
+}
 
 describe('normalize, join and mix', () => {
   let dir;
@@ -24,6 +39,8 @@ describe('normalize, join and mix', () => {
     await src(['-f', 'lavfi', '-i', 'color=c=red:s=640x200:r=24:d=2'], f('silent.mp4'));
     await src(['-f', 'lavfi', '-i', 'testsrc2=s=640x200:r=24:d=4',
       '-f', 'lavfi', '-i', 'sine=f=660:r=44100:d=4'], f('wide.mp4'));
+    await src(['-f', 'lavfi', '-i', 'testsrc2=s=400x400:r=25:d=2',
+      '-f', 'lavfi', '-i', 'sine=f=330:r=48000:d=3'], f('long-audio.mp4'));
     await ffmpeg(['-f', 'lavfi', '-i', 'sine=f=220:r=48000:d=1', f('music.wav')]);
     await ffmpeg(['-f', 'lavfi', '-i', 'sine=f=880:r=48000:d=0.5', f('vo.wav')]);
   });
@@ -44,6 +61,14 @@ describe('normalize, join and mix', () => {
       assert.ok(p.hasAudio);
       near(p.duration, 3);
       near(r.duration, 3);
+    });
+
+    test('without duration the clip keeps the video length even if audio runs longer', async () => {
+      const r = await normalizeClip(f('long-audio.mp4'), f('n-long.mp4'), opts);
+      const p = await probe(r.out);
+      near(p.duration, 2, 0.05);
+      near(r.duration, 2, 0.05);
+      await assertAvInSync(r.out);
     });
 
     test('silent input gets a silent audio track and is padded to duration', async () => {
@@ -87,6 +112,7 @@ describe('normalize, join and mix', () => {
       const p = await probe(r.out);
       assert.equal(p.width, W);
       assert.ok(p.hasAudio);
+      await assertAvInSync(r.out);
     });
 
     test('fade transition subtracts overlap for each join', async () => {
@@ -95,6 +121,7 @@ describe('normalize, join and mix', () => {
       const r = await joinClips(clips, { transition: { type: 'fade', duration: d }, out: f('j-fade.mp4') });
       near(r.duration, 7 - 2 * d, 0.15);
       assert.ok((await probe(r.out)).hasAudio);
+      await assertAvInSync(r.out);
     });
 
     test('transition longer than the shortest clip throws', async () => {
@@ -119,6 +146,8 @@ describe('normalize, join and mix', () => {
       assert.ok(p.hasAudio);
       assert.equal(p.width, v.width);
       near(p.duration, v.duration);
+      await assertAvInSync(mixed);
+      near((await streamDurations(mixed)).video, (await streamDurations(video)).video, 0.01);
     });
 
     test('voiceover only, without ducking, keeps duration', async () => {
@@ -127,6 +156,7 @@ describe('normalize, join and mix', () => {
       const p = await probe(out);
       assert.ok(p.hasAudio);
       near(p.duration, 3);
+      await assertAvInSync(out);
     });
 
     test('no audio config copies the input', async () => {

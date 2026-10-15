@@ -2,3 +2,4 @@ node_modules/
 .vp-cache/
 out/
 *.log
+.hyperframes/

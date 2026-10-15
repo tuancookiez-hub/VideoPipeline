@@ -9,16 +9,21 @@ import { kenBurns } from './image.mjs';
 const run = promisify(execFile);
 const PAPER = '0xefe6d2';
 const INK = '0x3b3128';
-const FALLBACK_WARNING = 'collage: no GEMINI_API_KEY/VP_COLLAGE_DIR — using offline paper-collage fallback';
 
 export async function render(scene, ctx) {
   const log = ctx.log || console.log;
   if (scene.clip) return video.render({ ...scene, src: scene.clip }, ctx);
-  if (process.env.GEMINI_API_KEY && process.env.VP_COLLAGE_DIR && scene.still) {
-    return generate(scene, ctx, log);
-  }
-  log(`WARN ${FALLBACK_WARNING}`);
+  const missing = missingForGemini(scene);
+  if (!missing.length) return generate(scene, ctx, log);
+  log(`WARN collage: offline fallback, Gemini needs ${missing.join(', ')}`);
   return scene.still ? paperStill(scene, ctx) : placeholderCard(scene, ctx);
+}
+
+// Names only, never values: which of the three requirements for a Gemini clip is unset.
+export function missingForGemini(scene, env = process.env) {
+  return [['GEMINI_API_KEY', env.GEMINI_API_KEY], ['VP_COLLAGE_DIR', env.VP_COLLAGE_DIR], ['scene.still', scene.still]]
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
 }
 
 function aspectRatio({ width, height }) {
@@ -30,13 +35,17 @@ export function clampDuration(d) {
   return Math.min(10, Math.max(3, Math.round(d)));
 }
 
+// Argv for generate_video.py. Options come first; `--` ends them so a prompt like "-x" stays positional.
+export function collageArgs(scene, { project, workDir, collageDir }) {
+  return [join(collageDir, 'scripts', 'generate_video.py'), '--image', scene.still,
+    '--aspect-ratio', aspectRatio(project), '--duration', String(clampDuration(scene.duration)),
+    '--output', join(workDir, 'raw.mp4'), '--', scene.prompt || 'paper collage animation'];
+}
+
 async function generate(scene, ctx, log) {
   const clip = join(ctx.workDir, 'raw.mp4');
-  const script = join(process.env.VP_COLLAGE_DIR, 'scripts', 'generate_video.py');
-  const args = [script, scene.prompt || 'paper collage animation', '--image', scene.still,
-    '--aspect-ratio', aspectRatio(ctx.project), '--duration', String(clampDuration(scene.duration)),
-    '--output', clip];
-  log(`collage: uploading frames to the Gemini API (model via ${script})`);
+  const args = collageArgs(scene, { project: ctx.project, workDir: ctx.workDir, collageDir: process.env.VP_COLLAGE_DIR });
+  log(`collage: uploading frames to the Gemini API (model via ${args[0]})`);
   try {
     await run('python3', args, { maxBuffer: 16 * 1024 * 1024 });
   } catch (err) {
@@ -106,11 +115,16 @@ async function placeholderCard(scene, ctx) {
   const font = fontFile();
   const filters = [];
   if (scene.prompt && font) {
-    const textPath = join(ctx.workDir, 'card.txt');
-    writeFileSync(textPath, wrap(scene.prompt));
+    const lines = wrap(scene.prompt).split('\n');
     const size = Math.max(16, Math.round(height / 14));
-    filters.push(`drawtext=fontfile='${escapeOpt(font)}':textfile='${escapeOpt(textPath)}':fontsize=${size}` +
-      `:fontcolor=${INK}:line_spacing=${Math.round(size / 3)}:x=(w-text_w)/2:y=(h-text_h)/2`);
+    const lineH = Math.round(size * 1.3);
+    const top = `(h-${lines.length * lineH})/2`;
+    lines.forEach((line, i) => {
+      const textPath = join(ctx.workDir, `card-${i}.txt`);
+      writeFileSync(textPath, line);
+      filters.push(`drawtext=fontfile='${escapeOpt(font)}':textfile='${escapeOpt(textPath)}':fontsize=${size}` +
+        `:fontcolor=${INK}:x=(w-text_w)/2:y=${top}+${i * lineH}`);
+    });
   }
   await ffmpeg(['-f', 'lavfi', '-i', `color=c=${PAPER}:s=${width}x${height}:r=${fps}:d=${scene.duration}`,
     ...(filters.length ? ['-vf', filters.join(',')] : []),

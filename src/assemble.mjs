@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ffmpeg, probe } from './ffmpeg.mjs';
+import { videoDuration } from './normalize.mjs';
 
 const ENC = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p',
   '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart'];
@@ -17,7 +18,18 @@ export async function joinClips(clips, { transition = { type: 'none' }, out } = 
   } else {
     await xfadeJoin(clips, transition, out);
   }
-  return { out, duration: (await probe(out)).duration };
+  await alignAudio(out);
+  return { out, duration: await videoDuration(out) };
+}
+
+// AAC priming and pads can leave the audio 20-30 ms longer than the video; cut it to the video length.
+async function alignAudio(file) {
+  const tmp = `${file}.align.mp4`;
+  const V = (await videoDuration(file)).toFixed(3);
+  await ffmpeg(['-i', file, '-map', '0:v:0', '-map', '0:a:0', '-c:v', 'copy',
+    '-af', 'apad', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2',
+    '-t', V, '-movflags', '+faststart', tmp]);
+  await rename(tmp, file);
 }
 
 async function concat(clips, out) {
@@ -63,7 +75,7 @@ export async function mixAudio(video, audio, out) {
   }
   const { music, musicVolume = 0.25, voiceover = [], duck = true, loudness = -14, fadeOut = 1.5 } = audio;
   const info = await probe(video);
-  const V = info.duration.toFixed(3);
+  const V = (await videoDuration(video)).toFixed(3);
   const inputs = ['-i', video];
   const filters = [];
   let idx = 1;
@@ -76,7 +88,7 @@ export async function mixAudio(video, audio, out) {
 
   if (music) {
     inputs.push('-stream_loop', '-1', '-i', music);
-    const st = Math.max(0, info.duration - fadeOut).toFixed(3);
+    const st = Math.max(0, Number(V) - fadeOut).toFixed(3);
     filters.push(`[${idx}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:${V},asetpts=PTS-STARTPTS,` +
       `volume=${musicVolume},afade=t=out:st=${st}:d=${fadeOut}[mu]`);
     idx++;
@@ -117,7 +129,7 @@ export async function mixAudio(video, audio, out) {
   } else {
     filters.push('[sa]anull[mix]');
   }
-  filters.push(`[mix]loudnorm=I=${loudness}:TP=-1.5:LRA=11,aresample=48000[aout]`);
+  filters.push(`[mix]loudnorm=I=${loudness}:TP=-1.5:LRA=11,aresample=48000,apad[aout]`);
 
   await ffmpeg([...inputs, '-filter_complex', filters.join(';'),
     '-map', '0:v:0', '-map', '[aout]',
