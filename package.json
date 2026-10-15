@@ -1,0 +1,17 @@
+{
+  "name": "videopipeline",
+  "version": "0.1.0",
+  "description": "Scene-list video pipeline that renders HyperFrames, OneTake, Collage B-roll, Claude Animation Base and Lemo Opuscar scenes and assembles them into one film",
+  "type": "module",
+  "bin": { "vp": "bin/vp.mjs" },
+  "scripts": {
+    "test": "node --test test/",
+    "demo": "node bin/vp.mjs render examples/demo/project.json",
+    "doctor": "node bin/vp.mjs doctor"
+  },
+  "engines": { "node": ">=22" },
+  "license": "MIT",
+  "dependencies": {
+    "playwright-core": "1.56.1"
+  }
+}
