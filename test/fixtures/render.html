@@ -3,6 +3,12 @@
 <style>html,body{margin:0;background:#101018;overflow:hidden}#box{position:absolute;top:60px;left:0;width:60px;height:60px;background:#3c6}</style>
 </head><body><div id="box"></div>
 <script>
+// READY arrives late (like waiting for fonts or images), and render() draws nothing until it does.
 window.DUR = 1;
-window.render = function (t) { document.getElementById('box').style.left = (t * 260) + 'px'; };
+window.render = function (t) {
+  if (window.READY !== true) return;
+  document.documentElement.style.background = '#fff';
+  document.getElementById('box').style.left = (t * 260) + 'px';
+};
+setTimeout(() => { window.READY = true; }, 300);
 </script></body></html>

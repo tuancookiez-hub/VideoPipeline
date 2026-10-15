@@ -6,15 +6,16 @@ import { CHROME_ARGS, findChrome } from './chrome.mjs';
 import { spawnEncoder } from './ffmpeg.mjs';
 
 // What each protocol needs from the page. Engines pick one protocol; see docs/ARCHITECTURE.md.
+// `duration` is an expression evaluated in page scope, so top-level `const DUR` works as well as window.DUR.
 const SPECS = {
   seek: {
     hook: '__seek',
     what: 'seek-protocol scene',
-    duration: () => window.__meta?.dur,
+    duration: 'window.__meta?.dur',
     durationHint: 'define window.__meta.dur',
     ready: async (page, ms) => {
       if (!(await page.evaluate(() => '__ready' in window))) return;
-      await timed(page.evaluate(() => window.__ready), ms, 'window.__ready did not resolve');
+      await timed(page.evaluate(() => window.__ready), ms, `window.__ready did not resolve within ${ms} ms`);
     },
     frame: async (page, t) => {
       await page.evaluate((t) => window.__seek(t), t);
@@ -24,12 +25,9 @@ const SPECS = {
   render: {
     hook: 'render',
     what: 'render-protocol scene',
-    duration: () => window.DUR,
-    durationHint: 'define window.DUR',
-    ready: async (page, ms) => {
-      await waitPage(page, () => typeof window.render === 'function' && (window.READY === undefined || window.READY === true), ms, 'window.render/window.READY never became ready');
-      await page.evaluate(() => document.fonts.ready);
-    },
+    duration: 'typeof DUR !== "undefined" ? DUR : undefined',
+    durationHint: 'define DUR (a top-level const or window.DUR)',
+    ready: (page, ms) => waitPage(page, () => typeof window.render === 'function' && window.READY === true, ms, 'window.render / window.READY === true never became true'),
     frame: async (page, t) => {
       await page.evaluate((t) => window.render(t), t);
       return page.screenshot({ type: 'png' });
@@ -38,8 +36,8 @@ const SPECS = {
   abase: {
     hook: 'renderAt',
     what: 'animation-base scene',
-    duration: () => (window.LOOP ? window.LOOP.len : window.DUR),
-    durationHint: 'define window.DUR',
+    duration: 'typeof LOOP !== "undefined" && LOOP ? LOOP.len : (typeof DUR !== "undefined" ? DUR : undefined)',
+    durationHint: 'define DUR (a top-level const or window.DUR)',
     ready: (page, ms) => waitPage(page, () => window.ready === true, ms, 'window.ready never became true'),
     frame: async (page, t) => {
       const url = await page.evaluate((t) => window.renderAt(t, 'image/png'), t);
@@ -49,9 +47,12 @@ const SPECS = {
   },
 };
 
+// Resource types whose failure makes the page unusable (the reference renderer does the same).
+const FATAL_TYPES = new Set(['document', 'script', 'stylesheet']);
+
 function timed(promise, ms, msg) {
   let timer;
-  const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${msg} within ${ms} ms`)), ms); });
+  const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(msg)), ms); });
   return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
 }
 
@@ -72,18 +73,30 @@ function pageUrl(src, protocol, query) {
   return u.href;
 }
 
-export async function captureHtml({ src, protocol, width, height, fps, duration, out, chrome, timeoutMs = 60000, log, query }) {
+// frameTimeoutMs bounds each hook call + screenshot; timeoutMs bounds the page becoming ready.
+export async function captureHtml({ src, protocol, width, height, fps, duration, out, chrome, timeoutMs = 60000, frameTimeoutMs = 30000, log, query }) {
   const spec = SPECS[protocol];
   if (!spec) throw new Error(`unknown capture protocol "${protocol}". Known: ${Object.keys(SPECS).join(', ')}`);
-  const errors = [];
-  const pageError = () => new Error(`page error: ${errors[0]}`);
-  const check = () => { if (errors.length) throw pageError(); };
+  // Errors from the page (JS exceptions, failed loads) are recorded as they happen and reported first.
+  const problems = [];
+  const check = () => { if (problems.length) throw problems[0]; };
 
   const browser = await chromium.launch({ executablePath: chrome ?? findChrome(), args: CHROME_ARGS });
   let enc = null;
   try {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
-    page.on('pageerror', (e) => errors.push(e.message));
+    page.on('pageerror', (e) => problems.push(new Error(`page error: ${e.message}`)));
+    page.on('response', (r) => {
+      const url = r.url();
+      if (r.status() >= 400 && FATAL_TYPES.has(r.request().resourceType()) && !/\/favicon\.ico$/.test(new URL(url).pathname)) {
+        problems.push(new Error(`failed to load ${url} (${r.status()})`));
+      }
+    });
+    page.on('requestfailed', (r) => {
+      const url = r.url(), reason = r.failure()?.errorText ?? 'request failed';
+      if (!/^(file|https?):/.test(url) || /favicon/.test(url) || reason === 'net::ERR_ABORTED') return;
+      problems.push(new Error(`failed to load ${url} (${reason})`));
+    });
     try {
       await page.goto(pageUrl(src, protocol, query), { waitUntil: 'load' });
       check();
@@ -97,6 +110,7 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
       }
       check();
       if (!(await hasHook())) throw new Error(`page does not define window.${spec.hook} — not a ${spec.what}`);
+      await page.evaluate(() => document.fonts.ready);
       const dur = duration ?? (await page.evaluate(spec.duration));
       if (!(dur > 0)) throw new Error(`unknown duration: set scene.duration or ${spec.durationHint}`);
 
@@ -105,7 +119,8 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
       mkdirSync(dirname(out), { recursive: true });
       enc = spawnEncoder({ out, width, height, fps });
       for (let i = 0; i < n; i++) {
-        const buf = await spec.frame(page, i / fps);
+        const t = i / fps;
+        const buf = await timed(spec.frame(page, t), frameTimeoutMs, `frame ${i} (t=${t.toFixed(2)}s) timed out after ${frameTimeoutMs} ms`);
         check();
         await enc.write(buf);
         if ((i + 1) % every === 0 || i + 1 === n) log?.(`capture ${protocol}: ${i + 1}/${n} frames`);
@@ -115,7 +130,7 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
       await closing.close();
       return { out, frames: n, duration: dur };
     } catch (e) {
-      throw errors.length ? pageError() : e;
+      throw problems.length ? problems[0] : e;
     }
   } finally {
     if (enc) await enc.close().catch(() => {});

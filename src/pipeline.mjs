@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { findChrome } from './chrome.mjs';
-import { cachedClipPath, sceneKey } from './cache.mjs';
+import { cachedClipPath, pruneClips, sceneKey } from './cache.mjs';
 import { joinClips, mixAudio } from './assemble.mjs';
 import { probe } from './ffmpeg.mjs';
 import { getEngine } from './engines/index.mjs';
@@ -44,21 +44,20 @@ function chromeProvider() {
   };
 }
 
-async function renderScene(scene, eff, { force, chromeFor, log }) {
-  const key = await sceneKey(scene, eff);
+async function renderScene(scene, eff, { force, chromeFor, log, runDir }) {
+  const key = await sceneKey(scene, eff, { log });
   const clip = cachedClipPath(eff, scene, key);
   if (!force && existsSync(clip)) {
     const { duration } = await probe(clip);
     return { id: scene.id, engine: scene.engine, clip, duration, cached: true, renderSeconds: 0 };
   }
   const started = Date.now();
-  const workDir = join(eff.dir, '.vp-cache', 'work', scene.id);
-  await rm(workDir, { recursive: true, force: true });
+  const workDir = join(runDir, scene.id);
   await mkdir(workDir, { recursive: true });
   const chrome = chromeFor(scene.engine);
   const engine = await getEngine(scene.engine);
   const { clip: raw } = await engine.render(scene, { project: eff, workDir, chrome, log });
-  const tmp = clip.replace(/\.mp4$/, '.part.mp4');
+  const tmp = join(workDir, 'normalized.mp4');
   const { duration } = await normalizeClip(raw, tmp, {
     width: eff.width,
     height: eff.height,
@@ -66,22 +65,19 @@ async function renderScene(scene, eff, { force, chromeFor, log }) {
     duration: scene.duration,
   });
   await rename(tmp, clip);
+  await pruneClips(eff, scene, clip);
   const renderSeconds = (Date.now() - started) / 1000;
   return { id: scene.id, engine: scene.engine, clip, duration, cached: false, renderSeconds };
 }
 
-export async function renderProject(project, { only, force = false, draft = false, log = console.log } = {}) {
-  const format = formatFor(project, draft);
-  const eff = { ...project, ...format };
-  const selected = selectScenes(project.scenes, only);
+async function renderRun(project, eff, { only, force, draft, log, runDir, format, selected }) {
   const chromeFor = chromeProvider();
   const results = [];
-
   for (const [i, scene] of selected.entries()) {
     const label = `[${i + 1}/${selected.length}] ${scene.id} (${scene.engine})`;
     let result;
     try {
-      result = await renderScene(scene, eff, { force, chromeFor, log });
+      result = await renderScene(scene, eff, { force, chromeFor, log, runDir });
     } catch (err) {
       throw new Error(`scene "${scene.id}" failed: ${err.message}`, { cause: err });
     }
@@ -94,9 +90,7 @@ export async function renderProject(project, { only, force = false, draft = fals
     return { output: null, scenes: results };
   }
 
-  const workRoot = join(project.dir, '.vp-cache', 'work', '_film');
-  await mkdir(workRoot, { recursive: true });
-  const joined = join(workRoot, 'joined.mp4');
+  const joined = join(runDir, 'joined.mp4');
   await joinClips(results.map((r) => ({ path: r.clip, duration: r.duration })), { transition: project.transition, out: joined });
 
   const output = draft ? draftPath(project.output) : project.output;
@@ -116,4 +110,25 @@ export async function renderProject(project, { only, force = false, draft = fals
   await writeFile(`${output}.report.json`, JSON.stringify(report, null, 2) + '\n');
   log(`wrote ${output} (${report.durationSeconds}s)`);
   return { output, scenes: results };
+}
+
+export async function renderProject(project, { only, force = false, draft = false, log = console.log } = {}) {
+  const format = formatFor(project, draft);
+  const eff = { ...project, ...format };
+  const selected = selectScenes(project.scenes, only);
+
+  // Each run gets its own work dir, so two runs of one project do not share scratch files.
+  const workParent = join(project.dir, '.vp-cache', 'work');
+  await mkdir(workParent, { recursive: true });
+  const runDir = await mkdtemp(join(workParent, 'run-'));
+
+  let result;
+  try {
+    result = await renderRun(project, eff, { only, force, draft, log, runDir, format, selected });
+  } catch (err) {
+    log(`work dir kept for inspection: ${runDir}`);
+    throw err;
+  }
+  await rm(runDir, { recursive: true, force: true });
+  return result;
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigError, loadProject } from '../src/config.mjs';
@@ -123,7 +123,7 @@ test('cache key changes when src bytes change and is stable otherwise', async ()
     const k2 = await sceneKey(scene, project);
     assert.equal(k1, k2);
     assert.match(k1, /^[0-9a-f]{64}$/);
-    assert.equal(cachedClipPath(project, scene, k1), join(p.dir, '.vp-cache', `a-${k1.slice(0, 12)}.mp4`));
+    assert.equal(cachedClipPath(project, scene, k1), join(p.dir, '.vp-cache', `a-1920x1080p30-${k1.slice(0, 12)}.mp4`));
 
     await writeFile(scene.src, '<p>two</p>');
     const k3 = await sceneKey(scene, project);
@@ -132,6 +132,119 @@ test('cache key changes when src bytes change and is stable otherwise', async ()
     const wider = { ...project, width: 640 };
     assert.notEqual(await sceneKey(scene, wider), k3);
   } finally {
+    await p.cleanup();
+  }
+});
+
+test('unknown top-level and scene keys are warnings, not errors', async () => {
+  const p = await makeProject(
+    { title: 'w', duraton: 3, scenes: [{ id: 'a', engine: 'html', src: 'a.html', duraton: 2 }] },
+    { 'a.html': '<html></html>' },
+  );
+  try {
+    const project = loadProject(p.file);
+    assert.ok(project.warnings.some((w) => w.includes('project: unknown key "duraton"')), project.warnings.join('\n'));
+    assert.ok(project.warnings.some((w) => w.includes('scene "a": unknown key "duraton"')), project.warnings.join('\n'));
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('transition type must be a known xfade name and shorter than every known scene duration', async () => {
+  const bad = await makeProject({
+    title: 't',
+    transition: { type: 'bounce', duration: 0.5 },
+    scenes: [{ id: 'a', engine: 'image', src: 'a.png', duration: 1 }],
+  }, { 'a.png': 'x' });
+  const short = await makeProject({
+    title: 't',
+    transition: { type: 'wipeleft', duration: 1.5 },
+    scenes: [{ id: 'a', engine: 'image', src: 'a.png', duration: 1 }, { id: 'b', engine: 'image', src: 'a.png', duration: 2 }],
+  }, { 'a.png': 'x' });
+  try {
+    assert.throws(() => loadProject(bad.file), (e) => e instanceof ConfigError && e.problems.some((m) => m.includes('unknown type "bounce"')));
+    assert.throws(() => loadProject(short.file), (e) => e instanceof ConfigError && e.problems.some((m) => m.includes('scene "a" (1 s)')));
+  } finally {
+    await bad.cleanup();
+    await short.cleanup();
+  }
+});
+
+test('cache key is stable when the project directory is moved', async () => {
+  const p = await makeProject(
+    { title: 'move', scenes: [{ id: 'a', engine: 'html', src: 'scenes/a.html' }] },
+    { 'scenes/a.html': '<p>a</p>', 'scenes/lib.js': 'var x = 1;' },
+  );
+  const moved = await mkdtemp(join(tmpdir(), 'vp-moved-'));
+  try {
+    const before = loadProject(p.file);
+    const k1 = await sceneKey(before.scenes[0], before);
+    await cp(p.dir, moved, { recursive: true });
+    const after = loadProject(join(moved, 'project.json'));
+    assert.equal(await sceneKey(after.scenes[0], after), k1);
+  } finally {
+    await rm(moved, { recursive: true, force: true });
+    await p.cleanup();
+  }
+});
+
+test('sibling files of an html scene change its key; node_modules and out do not', async () => {
+  const p = await makeProject(
+    { title: 'sib', scenes: [{ id: 'a', engine: 'html', src: 'scenes/a.html' }] },
+    { 'scenes/a.html': '<p>a</p>', 'scenes/lib.js': 'var x = 1;' },
+  );
+  try {
+    const project = loadProject(p.file);
+    const scene = project.scenes[0];
+    const k1 = await sceneKey(scene, project);
+    await mkdir(join(p.dir, 'scenes', 'node_modules'), { recursive: true });
+    await mkdir(join(p.dir, 'scenes', 'out'), { recursive: true });
+    await writeFile(join(p.dir, 'scenes', 'node_modules', 'x.js'), 'x');
+    await writeFile(join(p.dir, 'scenes', 'out', 'x.mp4'), 'x');
+    assert.equal(await sceneKey(scene, project), k1);
+    await writeFile(join(p.dir, 'scenes', 'lib.js'), 'var x = 2;');
+    assert.notEqual(await sceneKey(scene, project), k1);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('opuscar key includes VP_OPUSCAR_DIR; collage key includes its path mode but never the key value', async () => {
+  const keys = ['VP_OPUSCAR_DIR', 'GEMINI_API_KEY', 'VP_COLLAGE_DIR'];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const p = await makeProject(
+    {
+      title: 'env',
+      scenes: [
+        { id: 'op', engine: 'opuscar', src: 'op/index.html' },
+        { id: 'col', engine: 'collage', still: 'still.png', duration: 3 },
+      ],
+    },
+    { 'op/index.html': '<p>op</p>', 'still.png': 'png' },
+  );
+  try {
+    const project = loadProject(p.file);
+    const [op, col] = project.scenes;
+    delete process.env.VP_OPUSCAR_DIR;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.VP_COLLAGE_DIR;
+    const opA = await sceneKey(op, project);
+    const colFallback = await sceneKey(col, project);
+
+    process.env.VP_OPUSCAR_DIR = '/some/checkout';
+    assert.notEqual(await sceneKey(op, project), opA);
+
+    process.env.GEMINI_API_KEY = 'secret-one';
+    process.env.VP_COLLAGE_DIR = '/some/collage';
+    const colGemini = await sceneKey(col, project);
+    assert.notEqual(colGemini, colFallback);
+    process.env.GEMINI_API_KEY = 'secret-two';
+    assert.equal(await sceneKey(col, project), colGemini, 'key value must not reach the hash');
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
     await p.cleanup();
   }
 });

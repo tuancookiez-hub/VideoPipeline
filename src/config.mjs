@@ -3,7 +3,11 @@ import { dirname, resolve } from 'node:path';
 import { ENGINE_NAMES } from './engines/index.mjs';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
-const HTML_ENGINES = new Set(['html', 'onetake', 'opuscar', 'animation-base', 'hyperframes']);
+const TRANSITIONS = new Set(('none fade fadeblack fadewhite wipeleft wiperight wipeup wipedown slideleft slideright ' +
+  'slideup slidedown circlecrop rectcrop distance smoothleft smoothright smoothup smoothdown circleopen circleclose ' +
+  'dissolve pixelize radial hblur zoomin').split(' '));
+const TOP_KEYS = new Set(['title', 'width', 'height', 'fps', 'output', 'transition', 'audio', 'scenes']);
+const SCENE_KEYS = new Set(['id', 'engine', 'src', 'still', 'clip', 'prompt', 'duration', 'trim', 'zoom']);
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -23,6 +27,12 @@ function isFile(p) {
 
 function checkFile(problems, label, p) {
   if (!isFile(p)) problems.push(`${label}: file not found: ${p}`);
+}
+
+function warnUnknown(warnings, label, obj, known) {
+  for (const key of Object.keys(obj)) {
+    if (!known.has(key)) warnings.push(`${label}: unknown key "${key}" (ignored)`);
+  }
 }
 
 function absolutize(obj, keys, dir) {
@@ -47,10 +57,23 @@ function validateTransition(problems, t) {
     problems.push('transition: must be an object with a "type" string');
     return { type: 'none', duration: 0 };
   }
+  if (!TRANSITIONS.has(t.type)) {
+    problems.push(`transition: unknown type "${t.type}" (known: ${[...TRANSITIONS].join(', ')})`);
+  }
   if (t.type !== 'none' && !(isNum(t.duration) && t.duration > 0)) {
     problems.push(`transition: duration must be > 0 when type is "${t.type}"`);
   }
   return { type: t.type, duration: t.duration ?? 0 };
+}
+
+// A transition overlaps both neighbours, so it must be shorter than every scene whose length is known.
+function checkTransitionFits(problems, transition, scenes) {
+  if (transition.type === 'none' || !isNum(transition.duration)) return;
+  for (const s of scenes) {
+    if (isObj(s) && isNum(s.duration) && transition.duration >= s.duration) {
+      problems.push(`transition: duration ${transition.duration} must be shorter than scene "${s.id}" (${s.duration} s)`);
+    }
+  }
 }
 
 function validateAudio(problems, audio, dir) {
@@ -87,12 +110,13 @@ function validateTrim(problems, label, trim) {
   if (!ok) problems.push(`${label}: "trim" must be [a, b] with 0 <= a < b`);
 }
 
-function validateScene(problems, scene, index, dir, seenIds) {
+function validateScene(problems, warnings, scene, index, dir, seenIds) {
   const label = isObj(scene) && isStr(scene.id) ? `scene "${scene.id}"` : `scenes[${index}]`;
   if (!isObj(scene)) {
     problems.push(`${label}: must be an object`);
     return scene;
   }
+  warnUnknown(warnings, label, scene, SCENE_KEYS);
   if (!isStr(scene.id) || !ID_RE.test(scene.id)) {
     problems.push(`${label}: "id" is required and must match ${ID_RE}`);
   } else if (seenIds.has(scene.id)) {
@@ -147,6 +171,8 @@ export function loadProject(file) {
   const dir = dirname(abs);
   const raw = readRaw(abs);
   const problems = [];
+  const warnings = [];
+  warnUnknown(warnings, 'project', raw, TOP_KEYS);
   const { width, height, fps } = validateTop(problems, raw);
 
   const title = isStr(raw.title) ? raw.title : 'untitled';
@@ -159,9 +185,10 @@ export function loadProject(file) {
 
   const seenIds = new Set();
   const scenes = Array.isArray(raw.scenes)
-    ? raw.scenes.map((s, i) => validateScene(problems, s, i, dir, seenIds))
+    ? raw.scenes.map((s, i) => validateScene(problems, warnings, s, i, dir, seenIds))
     : [];
+  checkTransitionFits(problems, transition, scenes);
 
   if (problems.length) throw new ConfigError(problems);
-  return { ...raw, title, width, height, fps, output, transition, audio, scenes, dir, file: abs };
+  return { ...raw, title, width, height, fps, output, transition, audio, scenes, dir, file: abs, warnings };
 }

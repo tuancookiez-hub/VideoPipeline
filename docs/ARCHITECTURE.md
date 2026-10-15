@@ -37,15 +37,21 @@ engine prints a one-line licence warning when used.
 
 ## Capture protocols (src/capture.mjs)
 
-All use the Chromium found by `chrome.findChrome()`, viewport = width×height,
-deviceScaleFactor 1, page loaded from a `file://` URL, frames t = i / fps for
-i in [0, round(duration*fps)). Frames are PNG piped into `ffmpeg.spawnEncoder`.
+All use the Chromium found by `chrome.findChrome()`, deviceScaleFactor 1,
+frames t = i / fps for i in [0, round(duration*fps)). Frames are PNG piped into
+`ffmpeg.spawnEncoder`, which encodes them at their native size; normalize.mjs
+then fits them to the project format (letterbox, never stretch). The viewport is
+the project size, except Opuscar, which is captured at 1920×1080 like its own
+renderer (served from a loopback-only http server rooted at `$VP_OPUSCAR_DIR`).
+All protocols await `document.fonts.ready`, fail fast on a page error or on a
+document/script/stylesheet that fails to load, and time out a frame hook after
+`frameTimeoutMs` (default 30 s).
 
 | protocol | ready                                   | duration (if scene.duration unset) | per frame                                           |
 |----------|-----------------------------------------|------------------------------------|-----------------------------------------------------|
 | `seek`   | `await window.__ready` (if defined)     | `window.__meta.dur`                | `await window.__seek(t)` then viewport screenshot   |
-| `render` | page load + `document.fonts.ready`      | `window.DUR`                       | `await window.render(t)` then viewport screenshot   |
-| `abase`  | load `src?render`, wait `window.ready === true` (60 s) | `window.LOOP ? LOOP.len : DUR` | `window.renderAt(t, ...)` returns an image data URL; decode and use it as the frame |
+| `render` | `window.READY === true` (like openDemo) | `DUR` (const or window prop)       | `await window.render(t)` then viewport screenshot   |
+| `abase`  | load `src?render`, wait `window.ready === true` (60 s) | `LOOP ? LOOP.len : DUR` (page-scope consts) | `window.renderAt(t, ...)` returns an image data URL; decode and use it as the frame |
 
 Exact arguments for Opuscar (query params) and ClaudeAnimationBase (`renderAt`
 args) must match their own renderers: `refs/lemo-opuscar/core/render/*.mjs`,
@@ -62,10 +68,10 @@ All paths are absolute after `loadProject`.
 ### src/ffmpeg.mjs  (done)
 - `ffmpeg(args: string[]): Promise<void>` — runs `ffmpeg -hide_banner -loglevel error -y ...args`; rejects with stderr.
 - `probe(file): Promise<{duration, width, height, fps, hasAudio}>`
-- `spawnEncoder({out, width, height, fps}): {write(buf): Promise<void>, close(): Promise<void>}` — PNG/JPEG frames on stdin → H.264 yuv420p CRF 18.
+- `spawnEncoder({out, fps}): {write(buf): Promise<void>, close(): Promise<void>}` — PNG frames on stdin → H.264 yuv420p CRF 18 at native size (padded to even dims); write() rejects with ffmpeg's own error if it dies.
 
 ### src/capture.mjs
-- `captureHtml({src, protocol, width, height, fps, duration?, out, chrome, timeoutMs?, log?}): Promise<{out, frames, duration}>`
+- `captureHtml({src, protocol, width, height, fps, duration?, out, chrome, timeoutMs?, frameTimeoutMs?, query?, log?}): Promise<{out, frames, duration}>` — `timeoutMs` bounds the ready wait.
 
 ### src/engines/<name>.mjs
 - `export async function render(scene, ctx): Promise<{clip: string}>`
@@ -115,7 +121,8 @@ engine except `collage`. `duration` (seconds, > 0) required for `image` and for 
 
 ### src/cache.mjs
 - `async sceneKey(scene, project): Promise<string>` — sha256 over scene JSON, project width/height/fps, and the streamed bytes of `scene.src`, `scene.still` and `scene.clip` when they are files.
-- Cache dir: `<projectDir>/.vp-cache/`; normalized clip stored as `<id>-<key12>.mp4`.
+  For html-based engines it hashes every file under the scene's folder (skipping node_modules, .git, .vp-cache, out, .hyperframes; falls back to src only above 2000 files / 200 MB). Collage keys include which path runs (clip / gemini / fallback). Paths in the key are relative to the project dir.
+- Cache dir: `<projectDir>/.vp-cache/`; normalized clip stored as `<id>-<W>x<H>p<fps>-<key12>.mp4`; older clips of the same scene and format are pruned. Each run works in its own `.vp-cache/work/run-*` dir.
 
 ### src/pipeline.mjs
 - `renderProject(project, {only?: string[], force?, draft?, log?}): Promise<{output, scenes: {id, clip, duration, cached}[]}>`

@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { cp, readFile, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { findChrome } from '../src/chrome.mjs';
 import { ConfigError, loadProject } from '../src/config.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const STARTER = join(ROOT, 'examples', 'starter');
+const HYPERFRAMES_PACKAGE = 'hyperframes@0.8.159';
 const run = promisify(execFile);
 const USAGE = `usage:
   vp render <project.json> [--only a,b] [--force] [--draft]
@@ -29,6 +32,7 @@ async function render(args) {
     return 2;
   }
   const project = loadProject(positionals[0]);
+  for (const w of project.warnings) console.warn(`WARN ${w}`);
   const only = values.only?.split(',').map((s) => s.trim()).filter(Boolean);
   // Loaded lazily so `doctor` and `init` still work while a module is missing or broken.
   const { renderProject } = await import('../src/pipeline.mjs');
@@ -62,9 +66,22 @@ function chromium() {
   }
 }
 
+// Hyperframes is fetched by npx at render time, so the only check here is that npm can reach it.
 async function hyperframes() {
-  const r = await tool('npx', ['--no-install', 'hyperframes', '--version']);
-  return r.ok ? r : { ok: true, detail: 'hyperframes CLI: fetched on demand via npx' };
+  try {
+    const { stdout } = await run('npm', ['view', HYPERFRAMES_PACKAGE, 'version'], { timeout: 10000 });
+    return { ok: true, detail: `${HYPERFRAMES_PACKAGE} reachable on npm (${stdout.trim()})` };
+  } catch {
+    return { ok: false, detail: 'not checked (offline)' };
+  }
+}
+
+// An optional path setting: unset is reported, set-but-missing is a failure.
+function envPath(name) {
+  const value = process.env[name];
+  if (!value) return { ok: false, detail: 'not set' };
+  const exists = existsSync(value);
+  return { ok: exists, detail: `set: ${value}${exists ? '' : ' (missing)'}` };
 }
 
 async function doctor() {
@@ -77,10 +94,12 @@ async function doctor() {
     { name: 'playwright-core', ...(await playwrightVersion()) },
     { name: 'hyperframes', ...(await hyperframes()) },
     { name: 'GEMINI_API_KEY', ok: Boolean(process.env.GEMINI_API_KEY), detail: process.env.GEMINI_API_KEY ? 'set' : 'not set' },
-    { name: 'VP_COLLAGE_DIR', ok: Boolean(process.env.VP_COLLAGE_DIR), detail: process.env.VP_COLLAGE_DIR ? 'set' : 'not set' },
+    { name: 'VP_COLLAGE_DIR', ...envPath('VP_COLLAGE_DIR') },
+    { name: 'VP_OPUSCAR_DIR', ...envPath('VP_OPUSCAR_DIR') },
+    { name: 'VP_HYPERFRAMES_BROWSER', ...envPath('VP_HYPERFRAMES_BROWSER') },
   ];
   for (const r of rows) {
-    console.log(`${r.ok ? '✓' : '✗'} ${r.name.padEnd(18)} ${r.detail}`);
+    console.log(`${r.ok ? '✓' : '✗'} ${r.name.padEnd(24)} ${r.detail}`);
   }
   const fatal = rows.some((r) => r.fatal && !r.ok);
   return fatal ? 1 : 0;
@@ -106,8 +125,9 @@ async function init(args) {
     console.error(`refusing to init: ${dest} exists and is not empty`);
     return 1;
   }
-  const skip = (src) => !/[\\/](\.vp-cache|out)([\\/]|$)/.test(src);
-  await cp(join(ROOT, 'examples', 'starter'), dest, { recursive: true, filter: skip });
+  // Only the path inside the starter decides; the install location may contain "out" or ".vp-cache".
+  const skip = (src) => !/(^|[\\/])(\.vp-cache|out)([\\/]|$)/.test(relative(STARTER, src));
+  await cp(STARTER, dest, { recursive: true, filter: skip });
   console.log(`created ${dest}\nnext: vp render ${join(dest, 'project.json')}`);
   return 0;
 }

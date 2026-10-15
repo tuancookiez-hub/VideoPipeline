@@ -6,7 +6,7 @@
   "bin": { "vp": "bin/vp.mjs" },
   "scripts": {
     "test": "node --test 'test/*.test.mjs'",
-    "demo": "node bin/vp.mjs render examples/demo/project.json",
+    "demo": "node bin/vp.mjs render examples/starter/project.json",
     "doctor": "node bin/vp.mjs doctor"
   },
   "engines": { "node": ">=22" },

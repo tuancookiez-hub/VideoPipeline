@@ -1,17 +1,18 @@
 <!doctype html>
 <html><head><meta charset="utf-8"></head><body style="margin:0;background:#101018">
 <script>
-const W = 320, H = 180;
+// Like ClaudeAnimationBase: DUR is a top-level const (not a window property), and the canvas is
+// larger than the capture viewport, so the frame must come back at its native size.
+const W = 640, H = 360, DUR = 1;
 const outC = document.createElement('canvas');
 outC.width = W; outC.height = H;
 const ctx = outC.getContext('2d');
 document.body.appendChild(outC);
-window.DUR = 1;
 window.renderAt = async (t, type = 'image/png', q = .92) => {
   ctx.fillStyle = '#101018';
   ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#48f';
-  ctx.fillRect(t * 260, 60, 60, 60);
+  ctx.fillRect(t * 520, 120, 120, 120);
   return outC.toDataURL(type, q);
 };
 window.addEventListener('load', () => { window.ready = true; });
