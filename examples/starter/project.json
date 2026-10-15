@@ -1,0 +1,13 @@
+{
+  "title": "starter",
+  "width": 1280,
+  "height": 720,
+  "fps": 24,
+  "output": "out/starter.mp4",
+  "transition": { "type": "fade", "duration": 0.5 },
+  "scenes": [
+    { "id": "title", "engine": "html", "src": "scenes/title.html" },
+    { "id": "cranes", "engine": "collage", "prompt": "paper cranes over layered mountains", "duration": 3 },
+    { "id": "outro", "engine": "html", "src": "scenes/outro.html" }
+  ]
+}

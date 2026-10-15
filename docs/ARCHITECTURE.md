@@ -114,7 +114,7 @@ engine except `collage`. `duration` (seconds, > 0) required for `image` and for 
 `collage` without `clip`.
 
 ### src/cache.mjs
-- `sceneKey(scene, project): string` — sha256 over scene JSON, project width/height/fps, and the bytes of `scene.src` (and `scene.still`) when they are files.
+- `async sceneKey(scene, project): Promise<string>` — sha256 over scene JSON, project width/height/fps, and the streamed bytes of `scene.src`, `scene.still` and `scene.clip` when they are files.
 - Cache dir: `<projectDir>/.vp-cache/`; normalized clip stored as `<id>-<key12>.mp4`.
 
 ### src/pipeline.mjs

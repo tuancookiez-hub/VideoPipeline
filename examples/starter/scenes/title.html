@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VideoPipeline</title>
+<style>
+  :root { --paper: #f4ecdc; --ink: #2b2118; --sun: #c8102e; --ground: #e2d3b0; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--paper); }
+  .stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; background: var(--paper); }
+  .sun {
+    position: absolute; left: 50%; top: 100%; width: 34vh; height: 34vh;
+    margin-left: -17vh; border-radius: 50%; background: var(--sun);
+  }
+  .ground {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 26%;
+    background: var(--ground); border-top: 2px solid var(--ink);
+  }
+  .title {
+    position: absolute; left: 0; right: 0; top: 14%; text-align: center;
+    font-family: Georgia, 'Times New Roman', serif; font-size: 9vh; color: var(--ink);
+    letter-spacing: 0.02em; opacity: 0; font-weight: normal;
+  }
+  .rule {
+    position: absolute; left: 50%; top: 40%; width: 0; height: 2px; margin-left: 0;
+    background: var(--ink);
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="sun" id="sun"></div>
+  <div class="ground"></div>
+  <h1 class="title" id="title">VideoPipeline</h1>
+  <div class="rule" id="rule"></div>
+</div>
+<script>
+  const DUR = 3;
+  const clamp = (x) => Math.min(1, Math.max(0, x));
+  const easeOut = (x) => 1 - Math.pow(1 - clamp(x), 3);
+  const lerp = (a, b, p) => a + (b - a) * p;
+  const $ = (id) => document.getElementById(id);
+
+  window.__meta = { dur: DUR };
+  window.__ready = document.fonts ? document.fonts.ready : Promise.resolve();
+
+  // Pure function of t: no timers, no CSS animations, so every frame is reproducible.
+  window.__seek = function (t) {
+    const sunP = easeOut((t - 0.2) / 1.8);
+    const sunTop = lerp(100, 36, sunP);
+    $('sun').style.top = sunTop + '%';
+
+    const titleP = easeOut((t - 0.9) / 0.9);
+    $('title').style.opacity = titleP;
+    $('title').style.transform = 'translateY(' + lerp(24, 0, titleP) + 'px)';
+
+    const ruleP = easeOut((t - 1.4) / 1.0);
+    $('rule').style.width = (ruleP * 22) + 'vw';
+    $('rule').style.marginLeft = (-ruleP * 11) + 'vw';
+  };
+
+  window.__seek(0);
+</script>
+</body>
+</html>
