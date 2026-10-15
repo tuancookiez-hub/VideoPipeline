@@ -48,6 +48,7 @@ const SPECS = {
 };
 
 // Resource types whose failure makes the page unusable (the reference renderer does the same).
+// Any other failed subresource (image, font, media, fetch, xhr) is logged and the capture goes on.
 const FATAL_TYPES = new Set(['document', 'script', 'stylesheet']);
 
 function timed(promise, ms, msg) {
@@ -80,6 +81,10 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
   // Errors from the page (JS exceptions, failed loads) are recorded as they happen and reported first.
   const problems = [];
   const check = () => { if (problems.length) throw problems[0]; };
+  const failed = (type, url, reason) => {
+    if (FATAL_TYPES.has(type)) problems.push(new Error(`failed to load ${url} (${reason})`));
+    else log?.(`capture: optional resource failed: ${url} (${reason})`);
+  };
 
   const browser = await chromium.launch({ executablePath: chrome ?? findChrome(), args: CHROME_ARGS });
   let enc = null;
@@ -88,14 +93,13 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
     page.on('pageerror', (e) => problems.push(new Error(`page error: ${e.message}`)));
     page.on('response', (r) => {
       const url = r.url();
-      if (r.status() >= 400 && FATAL_TYPES.has(r.request().resourceType()) && !/\/favicon\.ico$/.test(new URL(url).pathname)) {
-        problems.push(new Error(`failed to load ${url} (${r.status()})`));
-      }
+      if (r.status() < 400 || /\/favicon\.ico$/.test(new URL(url).pathname)) return;
+      failed(r.request().resourceType(), url, r.status());
     });
     page.on('requestfailed', (r) => {
       const url = r.url(), reason = r.failure()?.errorText ?? 'request failed';
       if (!/^(file|https?):/.test(url) || /favicon/.test(url) || reason === 'net::ERR_ABORTED') return;
-      problems.push(new Error(`failed to load ${url} (${reason})`));
+      failed(r.resourceType(), url, reason);
     });
     try {
       await page.goto(pageUrl(src, protocol, query), { waitUntil: 'load' });

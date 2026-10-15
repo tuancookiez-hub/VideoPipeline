@@ -52,13 +52,30 @@ export function runCli(args, { env, timeoutS = DEFAULT_TIMEOUT_S, bin = 'npx' })
     const keep = (d) => { lines.push(...String(d).split('\n').filter(Boolean)); lines.splice(0, Math.max(0, lines.length - 200)); };
     proc.stdout.on('data', keep);
     proc.stderr.on('data', keep);
+    // Ctrl-C reaches only this process (the child has its own group), so the group is killed on signals and on exit.
+    const killGroup = () => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    const onSignal = (sig) => () => {
+      killGroup();
+      cleanup();
+      process.kill(process.pid, sig); // default action again: the process ends with the signal
+    };
+    const handlers = { SIGINT: onSignal('SIGINT'), SIGTERM: onSignal('SIGTERM') };
+    const onExit = () => killGroup();
+    const cleanup = () => {
+      clearTimeout(timer);
+      for (const [sig, fn] of Object.entries(handlers)) process.off(sig, fn);
+      process.off('exit', onExit);
+    };
+    for (const [sig, fn] of Object.entries(handlers)) process.on(sig, fn);
+    process.on('exit', onExit);
     const timer = setTimeout(() => {
+      cleanup();
       try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); } // whole group: npx and the renderer it started
       reject(new Error(`hyperframes render timed out after ${timeoutS}s:\n${lines.slice(-20).join('\n')}`));
     }, timeoutS * 1000);
-    proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+    proc.on('error', (err) => { cleanup(); reject(err); });
     proc.on('close', (code) => {
-      clearTimeout(timer);
+      cleanup();
       if (code === 0) resolve();
       else reject(new Error(`hyperframes render exited with ${code}:\n${lines.slice(-20).join('\n')}`));
     });

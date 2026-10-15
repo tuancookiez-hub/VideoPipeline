@@ -248,3 +248,122 @@ test('opuscar key includes VP_OPUSCAR_DIR; collage key includes its path mode bu
     await p.cleanup();
   }
 });
+
+test('timeout must be a number > 0 and watch must name existing files or folders', async () => {
+  const p = await makeProject({
+    title: 'tw',
+    scenes: [
+      { id: 'a', engine: 'hyperframes', src: 'a.html', timeout: 0 },
+      { id: 'b', engine: 'html', src: 'a.html', watch: ['missing.css'] },
+      { id: 'c', engine: 'html', src: 'a.html', watch: 'lib' },
+    ],
+  }, { 'a.html': '<p>a</p>', 'lib/x.js': 'x' });
+  try {
+    let err;
+    try { loadProject(p.file); } catch (e) { err = e; }
+    assert.ok(err instanceof ConfigError);
+    const text = err.problems.join('\n');
+    assert.match(text, /scene "a": "timeout" must be a number > 0/);
+    assert.match(text, /scene "b" watch\[0\]: not found: .*missing\.css/);
+    assert.match(text, /scene "c": "watch" must be an array/);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('valid timeout and watch are kept, watch resolved against the project dir', async () => {
+  const p = await makeProject(
+    { title: 'tw2', scenes: [{ id: 'a', engine: 'html', src: 'scenes/a.html', timeout: 90, watch: ['shared', 'shared.css'] }] },
+    { 'scenes/a.html': '<p>a</p>', 'shared/x.js': 'x', 'shared.css': 'p{}' },
+  );
+  try {
+    const project = loadProject(p.file);
+    assert.equal(project.scenes[0].timeout, 90);
+    assert.deepEqual(project.scenes[0].watch, [join(p.dir, 'shared'), join(p.dir, 'shared.css')]);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('audio levels are validated when present', async () => {
+  const bad = await makeProject({
+    title: 'au',
+    audio: { musicVolume: 5, duck: 'yes', loudness: -4, fadeOut: -1 },
+    scenes: [{ id: 'a', engine: 'image', src: 'a.png', duration: 1 }],
+  }, { 'a.png': 'x' });
+  const good = await makeProject({
+    title: 'au',
+    audio: { musicVolume: 0, duck: false, loudness: -70, fadeOut: 0 },
+    scenes: [{ id: 'a', engine: 'image', src: 'a.png', duration: 1 }],
+  }, { 'a.png': 'x' });
+  try {
+    let err;
+    try { loadProject(bad.file); } catch (e) { err = e; }
+    assert.ok(err instanceof ConfigError);
+    for (const key of ['musicVolume', 'duck', 'loudness', 'fadeOut']) {
+      assert.ok(err.problems.some((m) => m.startsWith(`audio.${key}: must be`)), `missing ${key}: ${err.problems.join('\n')}`);
+    }
+    assert.equal(loadProject(good.file).audio.loudness, -70);
+  } finally {
+    await bad.cleanup();
+    await good.cleanup();
+  }
+});
+
+test('a root-level scene hashes only its src and watch: project.json and sibling files do not invalidate it', async () => {
+  const p = await makeProject(
+    { title: 'root', scenes: [{ id: 'a', engine: 'html', src: 'a.html', watch: ['lib'] }] },
+    { 'a.html': '<p>a</p>', 'lib/x.js': 'x', 'other.html': '<p>o</p>' },
+  );
+  try {
+    const k1 = await sceneKey(loadProject(p.file).scenes[0], loadProject(p.file));
+    await writeFile(p.file, JSON.stringify({ title: 'root 2', scenes: [{ id: 'a', engine: 'html', src: 'a.html', watch: ['lib'] }, { id: 'b', engine: 'html', src: 'other.html' }] }));
+    const edited = loadProject(p.file);
+    assert.equal(await sceneKey(edited.scenes[0], edited), k1, 'project.json edit');
+    await writeFile(join(p.dir, 'other.html'), '<p>changed</p>');
+    assert.equal(await sceneKey(edited.scenes[0], edited), k1, 'sibling edit');
+    await writeFile(join(p.dir, 'lib', 'x.js'), 'y');
+    assert.notEqual(await sceneKey(edited.scenes[0], edited), k1, 'watched folder edit');
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('a sub-folder scene honours watch files and folders outside its folder', async () => {
+  const p = await makeProject(
+    { title: 'sub', scenes: [{ id: 'a', engine: 'html', src: 'scenes/a.html', watch: ['shared.css', 'assets'] }] },
+    { 'scenes/a.html': '<p>a</p>', 'shared.css': 'p{}', 'assets/font/f.woff2': 'f' },
+  );
+  try {
+    const project = loadProject(p.file);
+    const scene = project.scenes[0];
+    const k1 = await sceneKey(scene, project);
+    await writeFile(join(p.dir, 'shared.css'), 'p{color:red}');
+    const k2 = await sceneKey(scene, project);
+    assert.notEqual(k2, k1, 'watched file');
+    await writeFile(join(p.dir, 'assets', 'font', 'f.woff2'), 'g');
+    assert.notEqual(await sceneKey(scene, project), k2, 'watched folder');
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test('output, draft and report files are never hashed, even inside the scene folder; .vp-cache is skipped', async () => {
+  const p = await makeProject(
+    { title: 'out', output: 'scenes/final.mp4', scenes: [{ id: 'a', engine: 'html', src: 'scenes/a.html' }] },
+    { 'scenes/a.html': '<p>a</p>', 'scenes/lib.js': 'x' },
+  );
+  try {
+    const project = loadProject(p.file);
+    const scene = project.scenes[0];
+    const k1 = await sceneKey(scene, project);
+    for (const name of ['final.mp4', 'final.mp4.report.json', 'final.draft.mp4', 'final.draft.mp4.report.json']) {
+      await writeFile(join(p.dir, 'scenes', name), `changed ${name}`);
+    }
+    await mkdir(join(p.dir, 'scenes', '.vp-cache'), { recursive: true });
+    await writeFile(join(p.dir, 'scenes', '.vp-cache', 'x.mp4'), 'x');
+    assert.equal(await sceneKey(scene, project), k1);
+  } finally {
+    await p.cleanup();
+  }
+});

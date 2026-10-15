@@ -9,12 +9,28 @@ const FILE_FIELDS = ['src', 'still', 'clip'];
 const MAX_FILES = 2000;
 const MAX_BYTES = 200 * 1024 * 1024;
 
+export const draftPath = (output) => output.replace(/(\.mp4)?$/i, '.draft.mp4');
+
 function isRegularFile(p) {
   try {
     return statSync(p).isFile();
   } catch {
     return false;
   }
+}
+
+function isDirectory(p) {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Files the project writes or reads as itself: never part of a scene's key, wherever they sit.
+function ownFiles(project) {
+  const outputs = [project.output, draftPath(project.output)].flatMap((o) => [o, `${o}.report.json`]);
+  return new Set([project.file, ...outputs]);
 }
 
 function hashFile(hash, file) {
@@ -26,8 +42,8 @@ function hashFile(hash, file) {
   });
 }
 
-// Every file under `root`, or null when there are more than MAX_FILES files or MAX_BYTES bytes.
-async function listTree(root) {
+// Every file under `root` except `skip`, or null when there are more than MAX_FILES files or MAX_BYTES bytes.
+async function listTree(root, skip) {
   const files = [];
   let bytes = 0;
   const pending = [root];
@@ -37,7 +53,7 @@ async function listTree(root) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) pending.push(full);
-      } else if (isRegularFile(full)) {
+      } else if (isRegularFile(full) && !skip.has(full)) {
         bytes += statSync(full).size;
         files.push(full);
         if (files.length > MAX_FILES || bytes > MAX_BYTES) return null;
@@ -53,14 +69,27 @@ function collageMode(scene) {
   return process.env.GEMINI_API_KEY && process.env.VP_COLLAGE_DIR && scene.still ? 'gemini' : 'fallback';
 }
 
+// Every file under a folder, or none (with a warning) when the folder is too large to hash.
+async function folderFiles(dir, skip, log, id) {
+  const tree = await listTree(dir, skip);
+  if (tree) return tree;
+  log(`WARN cache: ${id}: ${dir} has more than ${MAX_FILES} files or ${MAX_BYTES / 2 ** 20} MB; its other files will not invalidate the cache`);
+  return [];
+}
+
 // Files whose bytes go into the key, as [relative name, absolute path] sorted by name.
+// A scene in the project folder hashes only its src; a scene in a sub-folder hashes that folder.
+// `watch` adds files, or folders walked the same way, to either.
 async function hashedFiles(scene, project, log) {
+  const skip = ownFiles(project);
   const found = new Set(FILE_FIELDS.map((f) => scene[f]).filter((p) => typeof p === 'string' && isRegularFile(p)));
   if (HTML_ENGINES.has(scene.engine) && typeof scene.src === 'string') {
     const dir = dirname(scene.src);
-    const tree = await listTree(dir);
-    if (tree) for (const f of tree) found.add(f);
-    else log(`WARN cache: ${scene.id}: ${dir} has more than ${MAX_FILES} files or ${MAX_BYTES / 2 ** 20} MB; hashing ${scene.src} only, so edits to its other files will not invalidate the cache`);
+    if (dir !== project.dir) for (const f of await folderFiles(dir, skip, log, scene.id)) found.add(f);
+  }
+  for (const w of scene.watch ?? []) {
+    if (isDirectory(w)) for (const f of await folderFiles(w, skip, log, scene.id)) found.add(f);
+    else if (!skip.has(w)) found.add(w);
   }
   return [...found]
     .map((abs) => [relative(project.dir, abs), abs])
@@ -74,6 +103,7 @@ export async function sceneKey(scene, project, { log = console.log } = {}) {
   for (const f of FILE_FIELDS) {
     if (typeof scene[f] === 'string') portable[f] = relative(project.dir, scene[f]);
   }
+  if (Array.isArray(scene.watch)) portable.watch = scene.watch.map((p) => relative(project.dir, p));
   const extra = {};
   if (scene.engine === 'collage') extra.collageMode = collageMode(scene);
   if (scene.engine === 'opuscar') extra.opuscarDir = process.env.VP_OPUSCAR_DIR ?? null;

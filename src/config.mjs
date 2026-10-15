@@ -7,7 +7,7 @@ const TRANSITIONS = new Set(('none fade fadeblack fadewhite wipeleft wiperight w
   'slideup slidedown circlecrop rectcrop distance smoothleft smoothright smoothup smoothdown circleopen circleclose ' +
   'dissolve pixelize radial hblur zoomin').split(' '));
 const TOP_KEYS = new Set(['title', 'width', 'height', 'fps', 'output', 'transition', 'audio', 'scenes']);
-const SCENE_KEYS = new Set(['id', 'engine', 'src', 'still', 'clip', 'prompt', 'duration', 'trim', 'zoom']);
+const SCENE_KEYS = new Set(['id', 'engine', 'src', 'still', 'clip', 'prompt', 'duration', 'trim', 'zoom', 'timeout', 'watch']);
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -76,11 +76,25 @@ function checkTransitionFits(problems, transition, scenes) {
   }
 }
 
+const AUDIO_LEVELS = [
+  ['musicVolume', (v) => isNum(v) && v >= 0 && v <= 4, 'a number from 0 to 4'],
+  ['duck', (v) => typeof v === 'boolean', 'true or false'],
+  ['loudness', (v) => isNum(v) && v >= -70 && v <= -5, 'a number from -70 to -5 (LUFS)'],
+  ['fadeOut', (v) => isNum(v) && v >= 0, 'a number >= 0 (seconds)'],
+];
+
+function validateAudioLevels(problems, audio) {
+  for (const [key, ok, what] of AUDIO_LEVELS) {
+    if (audio[key] !== undefined && !ok(audio[key])) problems.push(`audio.${key}: must be ${what} (got ${JSON.stringify(audio[key])})`);
+  }
+}
+
 function validateAudio(problems, audio, dir) {
   if (!isObj(audio)) {
     problems.push('audio: must be an object');
     return undefined;
   }
+  validateAudioLevels(problems, audio);
   const out = absolutize(audio, ['music'], dir);
   if (audio.music !== undefined) {
     if (!isStr(audio.music)) problems.push('audio.music: must be a file path string');
@@ -108,6 +122,19 @@ function validateAudio(problems, audio, dir) {
 function validateTrim(problems, label, trim) {
   const ok = Array.isArray(trim) && trim.length === 2 && trim.every(isNum) && trim[0] >= 0 && trim[0] < trim[1];
   if (!ok) problems.push(`${label}: "trim" must be [a, b] with 0 <= a < b`);
+}
+
+// Each entry is a file or folder, relative to the project file; returns the resolved paths.
+function validateWatch(problems, label, watch, dir) {
+  if (!Array.isArray(watch) || !watch.every(isStr)) {
+    problems.push(`${label}: "watch" must be an array of file or folder paths`);
+    return undefined;
+  }
+  const paths = watch.map((p) => resolve(dir, p));
+  paths.forEach((p, i) => {
+    if (!existsSync(p)) problems.push(`${label} watch[${i}]: not found: ${p}`);
+  });
+  return paths;
 }
 
 function validateScene(problems, warnings, scene, index, dir, seenIds) {
@@ -150,7 +177,15 @@ function validateScene(problems, warnings, scene, index, dir, seenIds) {
     problems.push(`${label}: "duration" must be a number > 0`);
   }
   if (scene.trim !== undefined) validateTrim(problems, label, scene.trim);
-  return absolutize(scene, ['src', 'still', 'clip'], dir);
+  if (scene.timeout !== undefined && !(isNum(scene.timeout) && scene.timeout > 0)) {
+    problems.push(`${label}: "timeout" must be a number > 0 (seconds)`);
+  }
+  const out = absolutize(scene, ['src', 'still', 'clip'], dir);
+  if (scene.watch !== undefined) {
+    const watch = validateWatch(problems, label, scene.watch, dir);
+    if (watch) out.watch = watch;
+  }
+  return out;
 }
 
 function validateTop(problems, raw) {

@@ -45,7 +45,8 @@ the project size, except Opuscar, which is captured at 1920×1080 like its own
 renderer (served from a loopback-only http server rooted at `$VP_OPUSCAR_DIR`).
 All protocols await `document.fonts.ready`, fail fast on a page error or on a
 document/script/stylesheet that fails to load, and time out a frame hook after
-`frameTimeoutMs` (default 30 s).
+`frameTimeoutMs` (default 30 s). Other failed subresources (image, font, media, fetch, xhr)
+are logged through `log` as `capture: optional resource failed: <url> (<reason>)` and the capture goes on.
 
 | protocol | ready                                   | duration (if scene.duration unset) | per frame                                           |
 |----------|-----------------------------------------|------------------------------------|-----------------------------------------------------|
@@ -96,6 +97,7 @@ All paths are absolute after `loadProject`.
 
 ### src/config.mjs
 - `loadProject(file): Project` — resolve relative paths against the project file's dir, apply defaults, validate; throws `ConfigError` listing every problem.
+  Scene keys: `id engine src still clip prompt duration trim zoom timeout watch` (unknown keys warn). `timeout` > 0 seconds; `watch` is an array of existing files or folders (resolved). Audio levels are checked when present: `musicVolume` 0–4, `duck` boolean, `loudness` −70…−5, `fadeOut` ≥ 0.
 
 ```jsonc
 {
@@ -120,8 +122,12 @@ engine except `collage`. `duration` (seconds, > 0) required for `image` and for 
 `collage` without `clip`.
 
 ### src/cache.mjs
-- `async sceneKey(scene, project): Promise<string>` — sha256 over scene JSON, project width/height/fps, and the streamed bytes of `scene.src`, `scene.still` and `scene.clip` when they are files.
-  For html-based engines it hashes every file under the scene's folder (skipping node_modules, .git, .vp-cache, out, .hyperframes; falls back to src only above 2000 files / 200 MB). Collage keys include which path runs (clip / gemini / fallback). Paths in the key are relative to the project dir.
+- `async sceneKey(scene, project, {log}): Promise<string>` — sha256 over scene JSON (with `watch` relative), project width/height/fps, and the streamed bytes of the scene's files: `src`, `still`, `clip`, plus `watch` entries (folders walked recursively).
+  - Root-level `src` (`dirname(src) === project.dir`): only `src` (and `watch`). Project.json and siblings are not hashed.
+  - Sub-folder `src`: every file under its folder, skipping node_modules, .git, .vp-cache, out, .hyperframes. Above 2000 files / 200 MB the folder is skipped with a warning.
+  - Always excluded from every walk: `project.file`, `project.output`, `<output>.report.json`, the draft path (`<name>.draft.mp4`) and its `.report.json`.
+  - Collage keys include which path runs (clip / gemini / fallback). Paths in the key are relative to the project dir.
+  - `draftPath(output)` is exported from cache.mjs and shared with pipeline.mjs.
 - Cache dir: `<projectDir>/.vp-cache/`; normalized clip stored as `<id>-<W>x<H>p<fps>-<key12>.mp4`; older clips of the same scene and format are pruned. Each run works in its own `.vp-cache/work/run-*` dir.
 
 ### src/pipeline.mjs

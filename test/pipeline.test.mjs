@@ -1,7 +1,7 @@
-import { test, before, after } from 'node:test';
+import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ffmpeg, probe } from '../src/ffmpeg.mjs';
@@ -116,4 +116,36 @@ test('draft writes <name>.draft.mp4 at half size and keeps one clip per scene an
   const fxClips = cacheFiles().filter((n) => /^fx-\d+x\d+p\d+-[0-9a-f]{12}\.mp4$/.test(n));
   assert.equal(fxClips.length, 2, fxClips.join(', '));
   assert.equal(fxClips.filter((n) => n.startsWith('fx-160x90p')).length, 1, fxClips.join(', '));
+});
+
+describe('project at the root with its output next to the scene', () => {
+  let rootDir;
+
+  before(() => {
+    rootDir = mkdtempSync(join(tmpdir(), 'vp-root-'));
+    writeFileSync(join(rootDir, 'index.html'), `<!doctype html><script>
+      window.__meta = { dur: 1 };
+      window.__ready = Promise.resolve();
+      window.__seek = (t) => { document.body.style.background = t > 0.5 ? '#fff' : '#000'; };
+    </script>`);
+    writeFileSync(join(rootDir, 'project.json'), JSON.stringify({
+      title: 'root', width: 320, height: 180, fps: 10, output: 'final.mp4',
+      scenes: [{ id: 'a', engine: 'html', src: 'index.html' }],
+    }, null, 2));
+  });
+
+  after(() => {
+    if (rootDir) rmSync(rootDir, { recursive: true, force: true });
+  });
+
+  test('render twice: the output, its draft and their reports do not invalidate the cache', async () => {
+    const p = loadProject(join(rootDir, 'project.json'));
+    const first = await renderProject(p, { log: silent });
+    assert.equal(first.scenes[0].cached, false);
+    assert.ok(existsSync(join(rootDir, 'final.mp4')));
+    await renderProject(p, { draft: true, log: silent });
+    assert.ok(existsSync(join(rootDir, 'final.draft.mp4')));
+    const second = await renderProject(p, { log: silent });
+    assert.deepEqual(second.scenes.map((s) => s.cached), [true]);
+  });
 });

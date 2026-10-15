@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { findChrome } from './chrome.mjs';
-import { cachedClipPath, pruneClips, sceneKey } from './cache.mjs';
+import { cachedClipPath, draftPath, pruneClips, sceneKey } from './cache.mjs';
 import { joinClips, mixAudio } from './assemble.mjs';
 import { probe } from './ffmpeg.mjs';
 import { getEngine } from './engines/index.mjs';
@@ -12,7 +12,6 @@ const CHROME_ENGINES = new Set(['html', 'onetake', 'opuscar', 'animation-base'])
 
 const even = (n) => Math.max(2, 2 * Math.round(n / 2));
 const round2 = (n) => Math.round(n * 100) / 100;
-const draftPath = (output) => output.replace(/(\.mp4)?$/i, '.draft.mp4');
 
 function formatFor(project, draft) {
   if (!draft) return { width: project.width, height: project.height, fps: project.fps };

@@ -136,3 +136,13 @@ test('an unknown duration is rejected with a clear message', async () => {
     /unknown duration: set scene\.duration or define window\.__meta\.dur/,
   );
 });
+
+test('a missing image warns through log and the capture still succeeds', async () => {
+  const dir = tmp();
+  const src = join(dir, 'missing-img.html');
+  writeFileSync(src, `<!doctype html><img src="nope.png"><script>window.__meta={dur:1};window.__ready=Promise.resolve();window.__seek=()=>{};</script>`);
+  const logs = [];
+  const r = await captureHtml({ ...base, src, protocol: 'seek', out: join(dir, 'raw.mp4'), timeoutMs: 30000, log: (m) => logs.push(m) });
+  assert.equal(r.frames, 10);
+  assert.ok(logs.some((m) => /^capture: optional resource failed: file:\/\/\/.*nope\.png \(net::ERR_FILE_NOT_FOUND\)$/.test(m)), logs.join('\n'));
+});

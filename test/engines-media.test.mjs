@@ -1,8 +1,11 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ffmpeg, probe } from '../src/ffmpeg.mjs';
 import * as video from '../src/engines/video.mjs';
 import * as image from '../src/engines/image.mjs';
@@ -155,5 +158,32 @@ describe('hyperframes child environment', () => {
     const started = Date.now();
     await assert.rejects(runCli(['30'], { env: process.env, timeoutS: 0.2, bin: 'sleep' }), /timed out after 0.2s/);
     assert.ok(Date.now() - started < 5000);
+  });
+
+  test('SIGINT to the parent kills the render group, so no grandchild outlives it', async () => {
+    const work = mkdtempSync(join(tmpdir(), 'vp-sigint-'));
+    const pidFile = join(work, 'pid');
+    const mod = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'engines', 'hyperframes.mjs');
+    const script = `import(${JSON.stringify(mod)}).then((m) => m.runCli(['-c', 'sleep 30 & echo $! > "$PIDFILE"; wait'], `
+      + `{ env: process.env, timeoutS: 60, bin: 'sh' }).catch(() => {}))`;
+    const parent = spawn(process.execPath, ['-e', script], { env: { ...process.env, PIDFILE: pidFile }, stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 10000;
+      while (!existsSync(pidFile) || !readFileSync(pidFile, 'utf8').trim()) {
+        assert.ok(Date.now() < deadline, 'child never started');
+        await new Promise((ok) => setTimeout(ok, 50));
+      }
+      const grandchild = Number(readFileSync(pidFile, 'utf8'));
+      parent.kill('SIGINT');
+      const [code, signal] = await once(parent, 'exit');
+      assert.equal(signal, 'SIGINT', `parent exit code ${code}`);
+      const alive = () => { try { return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${grandchild}/stat`, 'utf8')); } catch { return false; } };
+      const until = Date.now() + 5000;
+      while (alive() && Date.now() < until) await new Promise((ok) => setTimeout(ok, 50));
+      assert.equal(alive(), false, 'grandchild still running');
+    } finally {
+      parent.kill('SIGKILL');
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });

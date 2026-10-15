@@ -85,8 +85,9 @@ Top-level keys (validated in `src/config.mjs`):
 Unknown keys produce a warning and are ignored.
 
 Scene keys: `id` (required, `^[a-z0-9][a-z0-9-]*$`, unique), `engine` (required), `src`, `still`,
-`clip`, `prompt`, `duration` (seconds, > 0), `trim` (`[start, end]`, 0 <= start < end) and `zoom`
-(image engine only).
+`clip`, `prompt`, `duration` (seconds, > 0), `trim` (`[start, end]`, 0 <= start < end), `zoom`
+(image engine only), `timeout` (seconds, > 0; hyperframes render limit, default 600) and `watch`
+(cache inputs, see Caching).
 
 **Transitions.** `type` is `none` or one of `fade fadeblack fadewhite wipeleft wiperight wipeup
 wipedown slideleft slideright slideup slidedown circlecrop rectcrop distance smoothleft smoothright
@@ -108,7 +109,8 @@ Transitions overlap, so the film shortens by one transition duration per join.
 - Each voiceover line starts at `at` seconds. With `duck` (default true) the music is sidechain-ducked under it.
 - Scene audio is kept. The mix is loudness-normalized to `loudness` LUFS (default -14).
 - Without an `audio` block the joined video is copied as is.
-- `music` and `voiceover` files are checked at load. `musicVolume`, `duck`, `loudness` and `fadeOut` are not validated.
+- Checked at load: `music` and `voiceover` files exist. Value ranges: `musicVolume` 0 to 4 (default 0.25),
+  `duck` true or false, `loudness` -70 to -5 LUFS, `fadeOut` 0 or more seconds.
 
 ## Engines
 
@@ -124,6 +126,10 @@ Transitions overlap, so the film shortens by one transition duration per join.
 | `image` | any | a still image | none | ffmpeg Ken Burns push-in |
 
 Paths are relative to the project file.
+
+**Optional assets only warn.** A failed `<img>`, font, media file or fetch/XHR in an HTML scene is logged as
+`capture: optional resource failed: <url> (<reason>)` and the render goes on. A missing document, `<script>`
+or `<stylesheet>` stops the render with the URL in the error.
 
 **html.** The page defines `window.__seek(t)`. Its length comes from `window.__meta.dur` unless the
 scene sets `duration`. An optional `window.__ready` promise is awaited first. Frames are taken at
@@ -161,7 +167,7 @@ Each frame is the PNG data URL returned by `window.renderAt(t, 'image/png')`.
 `npx --yes hyperframes@0.8.159 render <dir> -c index.html -o raw.mp4 -f <fps> --quiet` from the
 composition's folder (600 s timeout). The browser is `VP_HYPERFRAMES_BROWSER`, then
 `HYPERFRAMES_BROWSER_PATH`, then the newest `chromium_headless_shell-*` under `/opt/pw-browsers`.
-Variables whose names contain `KEY`, `TOKEN`, `SECRET` or `PASSWORD` are not passed to npx.
+Variables whose names contain `KEY`, `TOKEN`, `SECRET` or `PASSWORD` are not passed to npx. Ctrl-C, SIGTERM or a timeout kills the whole npx process group.
 
 ```json
 { "id": "intro", "engine": "hyperframes", "src": "scenes/intro/index.html" }
@@ -227,11 +233,17 @@ render with that error. Keep the page self-contained or load libraries by relati
   scene's older clips of the same format.
 - The key is a SHA-256 over the scene object (paths relative to the project), `width`, `height`, `fps`,
   engine extras, and the bytes of `src`, `still` and `clip`.
-- HTML-based engines (`html`, `onetake`, `opuscar`, `animation-base`, `hyperframes`) hash every file in
-  the `src` folder, skipping `node_modules`, `.git`, `.vp-cache`, `out` and `.hyperframes`. Scenes that
-  share a folder invalidate each other. Above 2000 files or 200 MB only `src` is hashed, with a warning.
-- Files outside a scene's folder, such as a shared stylesheet in `../assets`, invalidate nothing unless
-  they are its `src`, `still` or `clip`.
+- A scene whose `src` sits in the project folder hashes only `src`. Editing `project.json`, or a sibling
+  file, re-renders nothing.
+- HTML-based engines (`html`, `onetake`, `opuscar`, `animation-base`, `hyperframes`) in a sub-folder hash every
+  file in the `src` folder, skipping `node_modules`, `.git`, `.vp-cache`, `out` and `.hyperframes`. Scenes
+  that share a folder invalidate each other. Above 2000 files or 200 MB only the named files are hashed, with a warning.
+- `watch` adds files or folders to the key for any engine. Entries are relative to the project file; folders
+  are walked with the same skip rules. Example: `"watch": ["../assets/brand.css", "shared"]`. Paths are
+  checked at load.
+- The output, its `.draft.mp4`, and both `.report.json` files are never hashed, wherever they sit.
+  Neither is `project.json` itself.
+- Files outside a scene's folder invalidate nothing unless they are its `src`, `still`, `clip` or `watch`.
 - Changing `transition` or `audio` re-renders no scenes; joining and mixing run on every full render.
 - Draft and full renders use different format tags, so they keep separate clips.
 - `--force` re-renders the selected scenes. Work dirs live in `.vp-cache/work/run-*`; they are removed on
@@ -252,7 +264,7 @@ render with that error. Keep the page self-contained or load libraries by relati
 ## Development
 
 ```sh
-npm test              # node --test 'test/*.test.mjs': 52 tests, no network or API keys
+npm test              # node --test 'test/*.test.mjs': 61 tests, no network or API keys
 ```
 
 - `docs/ARCHITECTURE.md` has the module contracts, capture protocols and cache details.
