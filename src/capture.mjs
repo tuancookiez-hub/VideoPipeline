@@ -27,7 +27,7 @@ const SPECS = {
     duration: () => window.DUR,
     durationHint: 'define window.DUR',
     ready: async (page, ms) => {
-      await waitPage(page, () => window.READY === undefined || window.READY === true, ms, 'window.READY never became true');
+      await waitPage(page, () => typeof window.render === 'function' && (window.READY === undefined || window.READY === true), ms, 'window.render/window.READY never became ready');
       await page.evaluate(() => document.fonts.ready);
     },
     frame: async (page, t) => {
@@ -87,11 +87,16 @@ export async function captureHtml({ src, protocol, width, height, fps, duration,
     try {
       await page.goto(pageUrl(src, protocol, query), { waitUntil: 'load' });
       check();
-      await spec.ready(page, timeoutMs);
-      check();
-      if (!(await page.evaluate((name) => typeof window[name] === 'function', spec.hook))) {
-        throw new Error(`page does not define window.${spec.hook} — not a ${spec.what}`);
+      const hasHook = () => page.evaluate((name) => typeof window[name] === 'function', spec.hook);
+      try {
+        await spec.ready(page, timeoutMs);
+      } catch (e) {
+        check();
+        if (!(await hasHook())) throw new Error(`page does not define window.${spec.hook} — not a ${spec.what}`);
+        throw e;
       }
+      check();
+      if (!(await hasHook())) throw new Error(`page does not define window.${spec.hook} — not a ${spec.what}`);
       const dur = duration ?? (await page.evaluate(spec.duration));
       if (!(dur > 0)) throw new Error(`unknown duration: set scene.duration or ${spec.durationHint}`);
 

@@ -56,7 +56,7 @@ test('a top-level page error fails the capture', async () => {
 
 test('a page without the protocol hook is rejected with a clear message', async () => {
   await assert.rejects(
-    captureHtml({ ...base, src: join(FIXTURES, 'seek.html'), protocol: 'render', out: join(tmp(), 'raw.mp4'), timeoutMs: 30000 }),
+    captureHtml({ ...base, src: join(FIXTURES, 'seek.html'), protocol: 'render', out: join(tmp(), 'raw.mp4'), timeoutMs: 3000 }),
     /page does not define window\.render — not a render-protocol scene/,
   );
 });
