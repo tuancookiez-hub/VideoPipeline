@@ -10,9 +10,10 @@ import sys
 
 import bmesh
 import bpy
-from mathutils import Euler, Vector
+from mathutils import Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rig  # noqa: E402
 import timeline as T  # noqa: E402
 
 BUILD = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build"))
@@ -251,57 +252,15 @@ def key_value(sock, f, v):
 
 
 # ------------------------------------------------------------------ Clawd
-BODY = plain("ClawdBody", (0.52, 0.13, 0.07), 0.42, spec=0.45)
-EYE = plain("ClawdEye", (0.005, 0.005, 0.005), 0.25)
-U = 0.02  # one body unit in metres: body 12x8x6 units
+CENTER_Z = rig.CENTER_Z
+clawd = rig.build(sc.collection)
+root, flip, squash, body = clawd.root, clawd.flip, clawd.squash, clawd.body
+nub_l, nub_pivot, nub_r, eyes, happy = clawd.nub_l, clawd.nub_pivot, clawd.nub_r, clawd.eyes, clawd.happy
 
 
 def rbox(name, size, loc, mat, bevel, parent):
-    me = bpy.data.meshes.new(name)
-    bm = bmesh.new()
-    bmesh.ops.create_cube(bm, size=1.0)
-    for v in bm.verts:
-        v.co = Vector((v.co.x * size[0], v.co.y * size[1], v.co.z * size[2]))
-    bm.to_mesh(me)
-    bm.free()
-    me.materials.append(mat)
-    ob = link(bpy.data.objects.new(name, me))
-    ob.location = loc
-    ob.parent = parent
-    if bevel:
-        b = ob.modifiers.new("Bevel", "BEVEL")
-        b.width, b.segments = bevel, 5
-        b.harden_normals = False
-        for p in me.polygons:
-            p.use_smooth = True
-    return ob
+    return rig.rbox(name, size, loc, mat, bevel, parent, sc.collection)
 
-
-root = link(bpy.data.objects.new("ClawdRoot", None))
-flip = link(bpy.data.objects.new("ClawdFlip", None))
-flip.parent = root
-CENTER_Z = 2 * U + 4 * U
-flip.location = (0, 0, CENTER_Z)
-squash = link(bpy.data.objects.new("ClawdSquash", None))
-squash.parent = flip
-squash.location = (0, 0, -CENTER_Z)
-body = rbox("ClawdBodyMesh", (12 * U, 6 * U, 8 * U), (0, 0, CENTER_Z), BODY, 0.022, squash)
-for i, lx in enumerate([-4.25, -1.75, 1.75, 4.25]):
-    rbox(f"ClawdLeg{i}", (1.5 * U, 2.2 * U, 2.6 * U), (lx * U, 0, 1.3 * U), BODY, 0.006, squash)
-nub_l = rbox("ClawdNubL", (2.4 * U, 2.4 * U, 2.0 * U), (-7.0 * U, 0, CENTER_Z), BODY, 0.008, squash)
-nub_pivot = link(bpy.data.objects.new("ClawdNubPivot", None))
-nub_pivot.parent = squash
-nub_pivot.location = (6 * U, 0, CENTER_Z)
-nub_r = rbox("ClawdNubR", (2.4 * U, 2.4 * U, 2.0 * U), (1.0 * U, 0, 0), BODY, 0.008, nub_pivot)
-eyes = [rbox(f"ClawdEye{i}", (1.1 * U, 0.6 * U, 2.4 * U), (sx * 2.45 * U, -3.0 * U, CENTER_Z + 0.8 * U), EYE, 0.003, squash)
-        for i, sx in enumerate((-1, 1))]
-happy = []
-for i, sx in enumerate((-1, 1)):        # ^^ eyes for the wave
-    for j, a in enumerate((1, -1)):
-        e = rbox(f"ClawdHappy{i}{j}", (1.5 * U, 0.6 * U, 0.55 * U),
-                 (sx * 2.45 * U + a * -0.55 * U, -3.0 * U, CENTER_Z + 1.0 * U), EYE, 0.002, squash)
-        e.rotation_euler = (0, a * math.radians(-40), 0)
-        happy.append(e)
 
 # flat card that peels off the comp
 flat_img = load("clawd_flat.png")
@@ -417,7 +376,7 @@ for f, t in zip(range(1, N + 1), TIMES):
         key_scale(e, f, (1, 1, blink))
     clawd_world.append(p + Vector((0, 0, CENTER_Z)))
 
-for ob in [body, nub_l, nub_r] + eyes + [o for o in squash.children if o.name.startswith("ClawdLeg")]:
+for ob in [body, nub_l, nub_r] + eyes + clawd.legs:
     key_hide(ob, (F(T.T_POP), F(T.T_WAVE) - 1 if ob in eyes else N))
 for e in happy:
     key_hide(e, (F(T.T_WAVE), N))
